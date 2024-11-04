@@ -14,8 +14,9 @@ contract SphereXEngine is ISphereXEngine, AccessControlDefaultAdminRules {
     // the following are packed together for slot optimization and gas saving
     struct FlowConfiguration {
         uint16 depth;
-        uint16 reserved;
-        bool enforce;
+        uint8 reserved;
+        bool ignore; // relevant usually when new functions are added after an upgrade
+        bool enforce; // relevant only in selectiveTXF mode
         uint216 pattern;
     }
 
@@ -28,13 +29,18 @@ contract SphereXEngine is ISphereXEngine, AccessControlDefaultAdminRules {
         bytes8 reserved;
     }
 
+    struct FunctionConfig {
+        bool enforce; // relevant only in selectivTXF mode
+        bool ignore;
+    }
+
     EngineConfig internal _engineConfig = EngineConfig(0, bytes16(uint128(1)), 0);
     mapping(address => bool) internal _allowedSenders;
     mapping(uint216 => bool) internal _allowedPatterns;
 
-    FlowConfiguration internal _flowConfig = FlowConfiguration(DEPTH_START, 0, false, PATTERN_START);
+    FlowConfiguration internal _flowConfig = FlowConfiguration(DEPTH_START, 0, false, false, PATTERN_START);
 
-    mapping(uint256 => bool) internal _enforceFunction;
+    mapping(uint256 => FunctionConfig) internal _functionsConfig;
 
     uint216 internal constant PATTERN_START = 1;
     uint16 internal constant DEPTH_START = 1;
@@ -75,6 +81,8 @@ contract SphereXEngine is ISphereXEngine, AccessControlDefaultAdminRules {
     event RemovedAllowedPatterns(uint216[] patterns);
     event AddedEnforcedFunctions(uint256[] functions);
     event RemovedEnforcedFunctions(uint256[] functions);
+    event IgnoringFunctions(uint256[] functions);
+    event ReIncludingFunctions(uint256[] functions);
 
     modifier returnsIfNotActivated() {
         if (_engineConfig.rules == DEACTIVATED) {
@@ -194,7 +202,7 @@ contract SphereXEngine is ISphereXEngine, AccessControlDefaultAdminRules {
      */
     function includeEnforcedFunctions(uint256[] calldata functions) external onlyOperator {
         for (uint256 i = 0; i < functions.length; ++i) {
-            _enforceFunction[functions[i]] = true;
+            _functionsConfig[functions[i]].enforce = true;
         }
         emit AddedEnforcedFunctions(functions);
     }
@@ -205,10 +213,35 @@ contract SphereXEngine is ISphereXEngine, AccessControlDefaultAdminRules {
      */
     function excludeEnforcedFunctions(uint256[] calldata functions) external onlyOperator {
         for (uint256 i = 0; i < functions.length; ++i) {
-            _enforceFunction[functions[i]] = false;
+            _functionsConfig[functions[i]].enforce = false;
         }
         emit RemovedEnforcedFunctions(functions);
     }
+
+    /**
+     * Add functions to ignore, when an ignored function is met
+     * we dont revert the entire flow.
+     * @param functions function indexes to enforce flows
+     */
+    function ignoreFunctionsFromFlow(uint256[] calldata functions) external onlyOperator {
+        for (uint256 i = 0; i < functions.length; ++i) {
+            _functionsConfig[functions[i]].ignore = true;
+        }
+        emit IgnoringFunctions(functions);
+    }
+
+    /**
+     * Re-include functions to flow, from this point on we will enforce the flow
+     * including the functions.
+     * @param functions function indexes to stop enforcing flows
+     */
+    function reIncludeFunctionsToFlow(uint256[] calldata functions) external onlyOperator {
+        for (uint256 i = 0; i < functions.length; ++i) {
+            _functionsConfig[functions[i]].ignore = false;
+        }
+        emit ReIncludingFunctions(functions);
+    }
+
 
     function grantSenderAdderRole(address newSenderAdder) external onlyOperator {
         _grantRole(SENDER_ADDER_ROLE, newSenderAdder);
@@ -249,6 +282,7 @@ contract SphereXEngine is ISphereXEngine, AccessControlDefaultAdminRules {
             flowConfig.pattern = PATTERN_START;
             engineConfig.txBoundaryHash = currentTxBoundaryHash;
             flowConfig.enforce = false;
+            flowConfig.ignore = false;
             if (flowConfig.depth != DEPTH_START) {
                 // This is an edge case we (and the client) should be able to monitor easily.
                 emit TxStartedAtIrregularDepth();
@@ -257,16 +291,28 @@ contract SphereXEngine is ISphereXEngine, AccessControlDefaultAdminRules {
 
             _engineConfig.txBoundaryHash = engineConfig.txBoundaryHash;
         }
-
-        if (_isSelectiveTxfActivated(engineConfig.rules)) {
-            // if we are not in enforment mode then check if the current function turn it on
-            if (!flowConfig.enforce && _enforceFunction[uint256(num)]) {
-                flowConfig.enforce = true;
-            }
+        
+        if (flowConfig.ignore) {
+            return;
         }
 
-        flowConfig.pattern = uint216(bytes27(keccak256(abi.encode(num, flowConfig.pattern))));
         ++flowConfig.depth;
+
+        FunctionConfig memory functionsConfig = _functionsConfig[uint256(num)];
+        
+        if (functionsConfig.ignore) {
+            // we need to update the flow config to ignore the rest of the flow
+            flowConfig.ignore = true;
+        } else {
+            if (_isSelectiveTxfActivated(engineConfig.rules)) {
+                // if we are not in enforment mode then check if the current function turn it on
+                if (!flowConfig.enforce && functionsConfig.enforce) {
+                    flowConfig.enforce = true;
+                }
+            }
+
+            flowConfig.pattern = uint216(bytes27(keccak256(abi.encode(num, flowConfig.pattern))));
+        }
 
         _flowConfig = flowConfig;
     }
@@ -282,23 +328,26 @@ contract SphereXEngine is ISphereXEngine, AccessControlDefaultAdminRules {
         FlowConfiguration memory flowConfig = _flowConfig;
         bytes8 rules = _engineConfig.rules;
 
-        flowConfig.pattern = uint216(bytes27(keccak256(abi.encode(num, flowConfig.pattern))));
         --flowConfig.depth;
 
-        if ((forceCheck) || (flowConfig.depth == DEPTH_START)) {
-            if (_isSelectiveTxfActivated(rules)) {
-                if (flowConfig.enforce) {
+        if (!flowConfig.ignore){
+            flowConfig.pattern = uint216(bytes27(keccak256(abi.encode(num, flowConfig.pattern))));
+
+            if ((forceCheck) || (flowConfig.depth == DEPTH_START)) {
+                if (_isSelectiveTxfActivated(rules)) {
+                    if (flowConfig.enforce) {
+                        _checkCallFlow(flowConfig.pattern);
+                    }
+                } else {
                     _checkCallFlow(flowConfig.pattern);
                 }
-            } else {
-                _checkCallFlow(flowConfig.pattern);
             }
         }
-
         // If we are configured to CF then if we reach depth == DEPTH_START we should reinit the
         // currentPattern
         if (flowConfig.depth == DEPTH_START && _isCFActivated(rules)) {
             flowConfig.pattern = PATTERN_START;
+            flowConfig.ignore = false;
         }
 
         _flowConfig = flowConfig;
