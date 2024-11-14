@@ -92,4 +92,14 @@ contract CFUtils is Test {
             spherex_engine.sphereXValidateInternalPost(num, 0, emptyArray, emptyArray);
         }
     }
+
+    function sendExternalNumberToEngine(int256 num) internal {
+        if (num > 0) {
+            bytes memory empty;
+            spherex_engine.sphereXValidatePre(num, address(0), empty);
+        } else {
+            bytes32[] memory emptyArray = new bytes32[](0);
+            spherex_engine.sphereXValidatePost(num, 0, emptyArray, emptyArray);
+        }
+    }
 }

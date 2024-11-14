@@ -25,10 +25,11 @@ contract SphereXEngine is ISphereXEngine, AccessControlDefaultAdminRules {
         // The next variable is not a config but we place it here to save gas
         // Represent bytes16(keccak256(abi.encode(block.number, tx.origin, block.difficulty, block.timestamp)))
         bytes16 txBoundaryHash;
-        bytes8 reserved;
+        bool flow_depth_zero_check;
+        bytes7 reserved;
     }
 
-    EngineConfig internal _engineConfig = EngineConfig(0, bytes16(uint128(1)), 0);
+    EngineConfig internal _engineConfig = EngineConfig(0, bytes16(uint128(1)), false, 0);
     mapping(address => bool) internal _allowedSenders;
     mapping(uint216 => bool) internal _allowedPatterns;
 
@@ -68,6 +69,7 @@ contract SphereXEngine is ISphereXEngine, AccessControlDefaultAdminRules {
 
     event TxStartedAtIrregularDepth();
     event ConfigureRules(bytes8 oldRules, bytes8 newRules);
+    event ConfigureFlowCheckOnZeroDepth(bool oldCheck, bool newcheck);
     event AddedAllowedSenders(address[] senders);
     event AddedAllowedSenderOnchain(address sender);
     event RemovedAllowedSenders(address[] senders);
@@ -130,6 +132,16 @@ contract SphereXEngine is ISphereXEngine, AccessControlDefaultAdminRules {
         emit ConfigureRules(oldRules, 0);
     }
 
+    /**
+     * Set flow_depth_zero_check, means that the flow pattern will be checked only when the depth is zero.
+     * and not on every external call exit.
+     * @param check - true to check only on zero depth, false to check on every external call exit. 
+     */
+    function setFlowCheckOnZeroDepth(bool check) external onlyOperator {
+        bool oldCheck = _engineConfig.flow_depth_zero_check;
+        _engineConfig.flow_depth_zero_check = check;
+        emit ConfigureFlowCheckOnZeroDepth(oldCheck, check);
+    }
     /**
      * Adds addresses that will be served by this engine. An address that was never added will get a revert if it tries to call the engine.
      * @param senders list of address to add to the set of allowed addresses
@@ -280,13 +292,13 @@ contract SphereXEngine is ISphereXEngine, AccessControlDefaultAdminRules {
     function _addCfElementFunctionExit(int256 num, bool forceCheck) internal {
         require(num < 0, "SphereX error: expected negative num");
         FlowConfiguration memory flowConfig = _flowConfig;
-        bytes8 rules = _engineConfig.rules;
+        EngineConfig memory engineConfig = _engineConfig;
 
         flowConfig.pattern = uint216(bytes27(keccak256(abi.encode(num, flowConfig.pattern))));
         --flowConfig.depth;
 
-        if ((forceCheck) || (flowConfig.depth == DEPTH_START)) {
-            if (_isSelectiveTxfActivated(rules)) {
+        if ((forceCheck && !engineConfig.flow_depth_zero_check) || (flowConfig.depth == DEPTH_START)) {
+            if (_isSelectiveTxfActivated(engineConfig.rules)) {
                 if (flowConfig.enforce) {
                     _checkCallFlow(flowConfig.pattern);
                 }
@@ -297,7 +309,7 @@ contract SphereXEngine is ISphereXEngine, AccessControlDefaultAdminRules {
 
         // If we are configured to CF then if we reach depth == DEPTH_START we should reinit the
         // currentPattern
-        if (flowConfig.depth == DEPTH_START && _isCFActivated(rules)) {
+        if (flowConfig.depth == DEPTH_START && _isCFActivated(engineConfig.rules)) {
             flowConfig.pattern = PATTERN_START;
         }
 

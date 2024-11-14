@@ -18,16 +18,6 @@ contract SphereXEngineSelectiveTxfTest is Test, CFUtils {
         spherex_engine.configureRules(bytes8(SELECTIVE_TXF));
     }
 
-    function sendExternalNumberToEngine(int256 num) private {
-        bytes32[] memory emptyArray = new bytes32[](0);
-        bytes memory emptyArray2 = new bytes(0);
-        if (num > 0) {
-            spherex_engine.sphereXValidatePre(num, random_address, emptyArray2);
-        } else {
-            spherex_engine.sphereXValidatePost(num, 0, emptyArray, emptyArray);
-        }
-    }
-
     //  ============ Test for the management functions  ============
 
     function test_SelectiveTxf_not_included_function() public {

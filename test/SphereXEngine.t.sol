@@ -638,4 +638,39 @@ contract SphereXEngineTest is Test, CFUtils {
             sendInternalNumberToEngine(not_allowed_cf[i]);
         }
     }
+
+    function test_check_only_on_depth_zero(bytes8 rule) public activateRule(rule) {
+        spherex_engine.setFlowCheckOnZeroDepth(true);
+        allowed_cf_storage = [int256(1),2,-2, -1];
+        addAllowedPattern();
+
+        sendExternalNumberToEngine(1);
+        sendExternalNumberToEngine(2);
+        sendExternalNumberToEngine(-2);
+        sendExternalNumberToEngine(-1);
+        vm.roll(200);
+        spherex_engine.setFlowCheckOnZeroDepth(false);
+
+        sendExternalNumberToEngine(1);
+        sendExternalNumberToEngine(2);
+        vm.expectRevert("SphereX error: disallowed tx pattern");
+        sendExternalNumberToEngine(-2);
+    }
+    function test_check_only_on_depth_zero_2_cf() public activateRule(CF) {
+        spherex_engine.setFlowCheckOnZeroDepth(true);
+        allowed_cf_storage = [int256(1),2,-2, -1];
+        addAllowedPattern();
+        allowed_cf_storage = [int256(3),-3];
+        addAllowedPattern();
+        
+        sendExternalNumberToEngine(1);
+        sendExternalNumberToEngine(2);
+        sendExternalNumberToEngine(-2);
+        sendExternalNumberToEngine(-1);
+        sendExternalNumberToEngine(3);
+        sendExternalNumberToEngine(-3);
+        sendExternalNumberToEngine(4);
+        vm.expectRevert("SphereX error: disallowed tx pattern");
+        sendExternalNumberToEngine(-4);
+    }
 }
